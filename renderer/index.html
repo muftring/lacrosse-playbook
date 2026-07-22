@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lacrosse Playbook</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="app">
+    <!-- Top toolbar -->
+    <div id="toolbar">
+      <div class="toolbar-group">
+        <span class="app-title">Lacrosse Playbook</span>
+      </div>
+      <div class="toolbar-group" id="tools">
+        <button class="tool-btn active" data-tool="select" title="Select / Move (V)">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4l6 18 3-7 7-3z"/></svg>
+        </button>
+        <button class="tool-btn" data-tool="player" title="Add Player (P)">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="9" r="3"/><path d="M7 21c0-3 2-5 5-5s5 2 5 5"/></svg>
+        </button>
+        <button class="tool-btn" data-tool="arrow" title="Draw Arrow (A)">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="5" y1="19" x2="19" y2="5"/><polyline points="12 5 19 5 19 12"/></svg>
+        </button>
+        <button class="tool-btn" data-tool="text" title="Add Text (T)">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 7 4 4 20 4 20 7"/><line x1="9" y1="20" x2="15" y2="20"/><line x1="12" y1="4" x2="12" y2="20"/></svg>
+        </button>
+        <div class="tool-separator"></div>
+        <button class="tool-btn" id="btn-delete" title="Delete Selected (Del)">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/></svg>
+        </button>
+        <button class="tool-btn" id="btn-clear" title="Clear Field">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>
+        </button>
+      </div>
+      <div class="toolbar-group toolbar-right">
+        <button class="tool-btn" id="btn-theme" title="Toggle light / dark mode">
+          <svg id="theme-icon-dark" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1111.21 3a7 7 0 009.79 9.79z"/></svg>
+          <svg id="theme-icon-light" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:none"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+        </button>
+        <button class="toolbar-action-btn" id="btn-save">Save</button>
+        <button class="toolbar-action-btn" id="btn-load">Open</button>
+      </div>
+    </div>
+
+    <div id="main-area">
+      <!-- Left panel: Teams -->
+      <div id="left-panel">
+        <div class="panel-section">
+          <h3 class="panel-title">Teams</h3>
+
+          <div class="team-config" id="team-a-config">
+            <div class="team-header">
+              <input type="color" class="team-color-picker" id="team-a-color" value="#e63946" title="Team color">
+              <input type="text" class="team-name-input" id="team-a-name" value="Home" placeholder="Team name">
+            </div>
+            <div class="team-label">Click field with Player tool to add</div>
+            <div id="team-a-roster" class="roster-list"></div>
+          </div>
+
+          <div class="team-divider"></div>
+
+          <div class="team-config" id="team-b-config">
+            <div class="team-header">
+              <input type="color" class="team-color-picker" id="team-b-color" value="#457b9d" title="Team color">
+              <input type="text" class="team-name-input" id="team-b-name" value="Away" placeholder="Team name">
+            </div>
+            <div class="team-label">Click field with Player tool to add</div>
+            <div id="team-b-roster" class="roster-list"></div>
+          </div>
+
+          <div class="team-divider"></div>
+          <div class="team-select-row">
+            <label class="panel-label">Active team:</label>
+            <div class="team-toggle">
+              <button class="team-toggle-btn active" id="btn-team-a">Home</button>
+              <button class="team-toggle-btn" id="btn-team-b">Away</button>
+            </div>
+          </div>
+
+          <div class="team-divider"></div>
+          <label class="panel-label" style="margin-bottom:6px;display:block;">Field setup</label>
+          <div class="play-actions-row">
+            <button class="panel-btn" id="btn-clear-players" title="Remove all players from the field">Clear Players</button>
+            <button class="panel-btn" id="btn-set-formation" title="Place both teams in the default formation">Set Formation</button>
+          </div>
+          <div class="play-actions-row">
+            <button class="panel-btn secondary" id="btn-save-formation" title="Save current player positions as a named formation">Save Formation</button>
+            <button class="panel-btn secondary" id="btn-load-formation" title="Load a saved formation onto the field">Load Formation</button>
+          </div>
+          <div class="play-actions-row" id="reset-formation-row" style="display:none">
+            <button class="panel-btn secondary" id="btn-reset-formation" title="Remove custom default — revert Set Formation to built-in positions">↩ Reset default</button>
+          </div>
+
+          <div class="team-divider"></div>
+          <label class="panel-label" style="margin-bottom:6px;display:block;">Half-field (Home)</label>
+          <div class="play-actions-row">
+            <button class="panel-btn" id="btn-set-offense" title="Place Home team in offensive positions">Set Offense</button>
+            <button class="panel-btn" id="btn-set-defense" title="Place Home team in defensive positions">Set Defense</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Center: Canvas -->
+      <div id="canvas-container">
+        <div id="view-tabs">
+          <button class="view-tab active" id="tab-full">Full Field</button>
+          <button class="view-tab" id="tab-half">Attack Zone</button>
+        </div>
+        <canvas id="field-canvas"></canvas>
+        <!-- Tooltip for player names -->
+        <div id="player-tooltip"></div>
+      </div>
+
+      <!-- Right panel: Plays -->
+      <div id="right-panel">
+        <div class="panel-section">
+          <h3 class="panel-title">Playbook</h3>
+          <div class="play-actions-row">
+            <button class="panel-btn" id="btn-new-play">+ New Play</button>
+          </div>
+          <div id="plays-list"></div>
+        </div>
+
+        <div class="panel-section" id="snapshots-section" style="display:none;">
+          <div class="snapshots-header">
+            <h3 class="panel-title" id="snapshots-title">Snapshots</h3>
+            <button class="panel-btn-sm" id="btn-close-play">✕</button>
+          </div>
+          <div class="snapshot-actions-row">
+            <button class="panel-btn" id="btn-add-snapshot">+ Add Frame</button>
+            <button class="panel-btn secondary" id="btn-export-pdf">Export PDF</button>
+          </div>
+          <div id="snapshots-list"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modals -->
+  <div id="modal-overlay" class="hidden">
+    <div id="modal-box">
+      <div id="modal-content"></div>
+    </div>
+  </div>
+
+  <script src="../node_modules/fabric/dist/fabric.min.js"></script>
+  <script src="../node_modules/jspdf/dist/jspdf.umd.js"></script>
+  <script src="field.js"></script>
+  <script src="arrows.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
