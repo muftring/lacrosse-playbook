@@ -16,6 +16,7 @@
     arrowStart: null,
     fieldInfo: null,
     nextPlayerId: 1,
+    ball: null,
   };
 
   // ─── Canvas setup ────────────────────────────────────────────────────────────
@@ -58,11 +59,13 @@
 
   document.getElementById('tab-full').addEventListener('click', () => setView('full'));
   document.getElementById('tab-half').addEventListener('click', () => setView('half'));
+  document.getElementById('tab-draw').addEventListener('click', () => setView('draw'));
 
   function setView(view) {
     currentView = view;
     document.getElementById('tab-full').classList.toggle('active', view === 'full');
     document.getElementById('tab-half').classList.toggle('active', view === 'half');
+    document.getElementById('tab-draw').classList.toggle('active', view === 'draw');
     document.getElementById('tab-half').textContent =
       halfFieldZone === 'defense' ? 'Defense Zone' : 'Attack Zone';
     applyCurrentView();
@@ -70,6 +73,7 @@
 
   function applyCurrentView() {
     if (currentView === 'half') applyHalfFieldView();
+    else if (currentView === 'draw') applyDrawCircleView();
     else applyFullFieldView();
   }
 
@@ -104,6 +108,10 @@
 
   // Defense zone: left half, x=0 (end line) → x=60
   function applyDefenseZoneView() { zoomToFieldRange(0, 60); }
+
+  // Draw circle: centered on the midfield hash (x=55), out to roughly the
+  // restraining lines (~20 yards either side) — the zone where a draw plays out.
+  function applyDrawCircleView() { zoomToFieldRange(35, 75); }
 
   // Initial field draw (async — fieldInfo is null until the image loads)
   rebuildField();
@@ -161,6 +169,7 @@
     clearNonFieldObjects();
     state.teams.a.players = [];
     state.teams.b.players = [];
+    state.ball = null;
     renderRosters();
     canvas.renderAll();
   });
@@ -174,6 +183,9 @@
         ['a','b'].forEach(t => {
           state.teams[t].players = state.teams[t].players.filter(p => p.id !== obj._playerId);
         });
+      }
+      if (obj._isBall && state.ball === obj) {
+        state.ball = null;
       }
       canvas.remove(obj);
     });
@@ -404,6 +416,7 @@
       .forEach(o => canvas.remove(o));
     state.teams.a.players = [];
     state.teams.b.players = [];
+    clearBall();
     canvas.discardActiveObject();
     renderRosters();
     canvas.renderAll();
@@ -507,6 +520,24 @@
     { label: 'M3', name: 'M3',  x: 28,  y: 46 },
   ];
 
+  // ─── Draw setup ────────────────────────────────────────────────────────────────
+  // 3 players per team allowed between the restraining lines during a draw:
+  // one center (at the hash, x=55/y=30 — offset slightly so both centers are
+  // visible back-to-back) plus a circle/wing pair placed on the draw circle.
+  // Default pair placement is just a starting point — drag them anywhere on
+  // the circle and re-run; that's the main "what-if" lever for this scenario.
+  const DRAW_HOME = [
+    { label: 'C',  name: 'Center',   x: 54.4, y: 30 },
+    { label: 'W1', name: 'Circle 1', x: 48,   y: 24 },
+    { label: 'W2', name: 'Circle 2', x: 48,   y: 36 },
+  ];
+  const DRAW_AWAY = [
+    { label: 'C',  name: 'Center',   x: 55.6, y: 30 },
+    { label: 'W1', name: 'Circle 1', x: 62,   y: 24 },
+    { label: 'W2', name: 'Circle 2', x: 62,   y: 36 },
+  ];
+  const DRAW_BALL_YARDS = { x: 55, y: 30 };
+
   function clearAllPlayers() {
     const allIds = new Set([
       ...state.teams.a.players.map(p => p.id),
@@ -604,6 +635,68 @@
     canvas.renderAll();
     setTool('select');
   }
+
+  // ─── Ball marker ──────────────────────────────────────────────────────────────
+  // Not tied to a team — a distinct, draggable marker for the draw/sim scenarios.
+  function clearBall() {
+    if (state.ball) {
+      canvas.remove(state.ball);
+      state.ball = null;
+    }
+  }
+
+  function placeBall(cx, cy) {
+    clearBall();
+    const radius = 9;
+    const circle = new fabric.Circle({
+      radius,
+      fill: '#f4d35e',
+      stroke: '#8a6d1a',
+      strokeWidth: 2,
+      originX: 'center',
+      originY: 'center',
+    });
+    const group = new fabric.Group([circle], {
+      left: cx,
+      top: cy,
+      originX: 'center',
+      originY: 'center',
+      selectable: true,
+      evented: true,
+      hasControls: false,
+      hasBorders: true,
+      subTargetCheck: false,
+      _isBall: true,
+    });
+    canvas.add(group);
+    canvas.bringToFront(group);
+    state.ball = group;
+    return group;
+  }
+
+  // ─── Draw setup ────────────────────────────────────────────────────────────────
+  // Places both centers, both circle pairs, and the ball at the draw circle,
+  // then zooms to the draw-circle view. Static placement only for now — no
+  // simulation logic yet (see the Draw Sim v1 spec for the planned build order).
+  function placeDrawSetup() {
+    const fi = state.fieldInfo;
+    if (!fi) return;
+    clearAllPlayers();
+    clearBall();
+    DRAW_HOME.forEach(pos =>
+      placePlayer('a', fi.fx(pos.x), fi.fy(pos.y), `${state.teams.a.name} ${pos.name}`, pos.label));
+    DRAW_AWAY.forEach(pos =>
+      placePlayer('b', fi.fx(pos.x), fi.fy(pos.y), `${state.teams.b.name} ${pos.name}`, pos.label));
+    placeBall(fi.fx(DRAW_BALL_YARDS.x), fi.fy(DRAW_BALL_YARDS.y));
+    renderRosters();
+    canvas.renderAll();
+    setTool('select');
+  }
+
+  document.getElementById('btn-draw-setup').addEventListener('click', () => {
+    placeDrawSetup();
+    setView('draw');
+  });
 
   // Set Formation — uses saved "default" or falls back to built-in
   document.getElementById('btn-set-formation').addEventListener('click', () => {
@@ -871,12 +964,15 @@
     clearNonFieldObjects();
     state.teams.a.players = [];
     state.teams.b.players = [];
+    state.ball = null;
 
     fabric.util.enlivenObjects(snap.json.objects || [], (objects) => {
       objects.forEach(obj => {
         if (obj._isFieldObject) return;
         canvas.add(obj);
-        if (obj._playerId && obj._team) {
+        if (obj._isBall) {
+          state.ball = obj;
+        } else if (obj._playerId && obj._team) {
           const team = state.teams[obj._team];
           if (!team.players.find(p => p.id === obj._playerId)) {
             const innerCircle = obj.type === 'group' ? obj.getObjects('circle')[0] || null : null;
@@ -903,7 +999,7 @@
       .map(o => o.toObject([
         '_playerId','_team','_playerName',
         '_arrowObject','_textBox','shaftWidth','headWidth','headLength',
-        '_x1','_y1','_x2','_y2'
+        '_x1','_y1','_x2','_y2','_isBall'
       ]));
     return { objects };
   }
@@ -1020,11 +1116,15 @@
     clearNonFieldObjects();
     state.teams.a.players = [];
     state.teams.b.players = [];
+    state.ball = null;
     if (data.fieldState) {
       fabric.util.enlivenObjects(data.fieldState.objects || [], (objects) => {
         objects.forEach(obj => {
-          if (!obj._isFieldObject) canvas.add(obj);
-          if (obj._playerId && obj._team) {
+          if (obj._isFieldObject) return;
+          canvas.add(obj);
+          if (obj._isBall) {
+            state.ball = obj;
+          } else if (obj._playerId && obj._team) {
             const team = state.teams[obj._team];
             if (!team.players.find(p => p.id === obj._playerId)) {
               const innerCircle = obj.type === 'group' ? obj.getObjects('circle')[0] || null : null;
