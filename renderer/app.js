@@ -18,6 +18,10 @@
     nextPlayerId: 1,
     ball: null,
   };
+  // Read-only bridge for renderer/sim.js (the Vue-mounted sim playback bar) —
+  // exposes just enough of this module's private state/view without pulling
+  // sim.js's tick engine into this IIFE or vice versa.
+  window._laxState = state;
 
   // ─── Canvas setup ────────────────────────────────────────────────────────────
   const container = document.getElementById('canvas-container');
@@ -60,6 +64,8 @@
   document.getElementById('tab-full').addEventListener('click', () => setView('full'));
   document.getElementById('tab-half').addEventListener('click', () => setView('half'));
   document.getElementById('tab-draw').addEventListener('click', () => setView('draw'));
+
+  window._laxGetView = () => currentView;
 
   function setView(view) {
     currentView = view;

@@ -118,6 +118,8 @@
         <canvas id="field-canvas"></canvas>
         <!-- Tooltip for player names -->
         <div id="player-tooltip"></div>
+        <!-- Sim playback bar (Vue-mounted, renderer/sim.js) -->
+        <div id="sim-playback-mount"></div>
       </div>
 
       <!-- Right panel: Plays -->
@@ -154,8 +156,10 @@
 
   <script src="../node_modules/fabric/dist/fabric.min.js"></script>
   <script src="../node_modules/jspdf/dist/jspdf.umd.js"></script>
+  <script src="../node_modules/vue/dist/vue.global.js"></script>
   <script src="field.js"></script>
   <script src="arrows.js"></script>
   <script src="app.js"></script>
+  <script src="sim.js"></script>
 </body>
 </html>

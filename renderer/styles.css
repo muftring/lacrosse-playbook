@@ -706,6 +706,90 @@ html, body {
   color: #fff !important;
 }
 
+/* Sim playback bar */
+#sim-playback-bar {
+  position: absolute;
+  left: 50%;
+  bottom: 16px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  background: var(--bg-panel2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  box-shadow: 0 4px 18px rgba(0,0,0,0.35);
+  z-index: 50;
+}
+
+.sim-btn {
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--bg-card);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s;
+}
+
+.sim-btn:hover:not(:disabled) {
+  background: var(--bg-hover);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.sim-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.sim-btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #0f0f1a;
+}
+
+.sim-btn.primary:hover:not(:disabled) {
+  opacity: 0.85;
+  color: #0f0f1a;
+}
+
+.sim-btn.secondary {
+  width: auto;
+  border-radius: var(--radius);
+  padding: 0 12px;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.sim-scrub {
+  width: 220px;
+  accent-color: var(--accent);
+}
+
+.sim-readout {
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  min-width: 128px;
+}
+
+.sim-speed {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-size: 11px;
+  padding: 4px 6px;
+  cursor: pointer;
+}
+
 /* Scrollbar */
 ::-webkit-scrollbar { width: 5px; }
 ::-webkit-scrollbar-track { background: transparent; }
