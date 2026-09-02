@@ -848,7 +848,7 @@ html, body {
 }
 
 /* Center attributes panel */
-#center-attrs-panel {
+#player-attrs-panel {
   position: absolute;
   right: 16px;
   top: 16px;
@@ -861,7 +861,7 @@ html, body {
   overflow: hidden;
 }
 
-.center-attrs-header {
+.player-attrs-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -872,7 +872,7 @@ html, body {
   color: var(--text);
 }
 
-.center-attrs-body {
+.player-attrs-body {
   padding: 10px 12px 14px;
   display: flex;
   flex-direction: column;
