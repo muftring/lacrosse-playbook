@@ -18,6 +18,9 @@
   const CONTEST_WINDOW_TICKS = 3;    // grace ticks after the first arrival, so a
                                       // trailing opponent can still get in on the roll
   const SCRUM_MARGIN = 0.15;         // relative weight gap under which it's a "50/50"
+  const DRAW_LOG_KEY = 'lax_draw_log';
+  const DRAW_LOG_MAX = 200;          // persisted cap; the panel only shows the most recent 20
+  const DRAW_LOG_DISPLAY = 20;
 
   const canvas = window._fabricCanvas;
 
@@ -142,6 +145,62 @@
   // resolves. Cleared on Reset / a fresh Draw Setup so a stale result never
   // outlives the field state it described.
   const outcomeState = Vue.reactive({ result: null });
+
+  // ─── Draw run history (step 6) ────────────────────────────────────────────
+  // Persisted the same way saved formations are (see getFormations()/
+  // persistFormations() in app.js): a flat JSON array in localStorage. Kept
+  // deliberately simple/flat — this feeds the future Phase 3 stats module
+  // described in the design doc's Roadmap, not meant to be that module's
+  // final schema.
+  function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
+
+  function getDrawLog() {
+    try {
+      const s = localStorage.getItem(DRAW_LOG_KEY);
+      return s ? JSON.parse(s) : [];
+    } catch (_) { return []; }
+  }
+
+  function persistDrawLog(log) {
+    localStorage.setItem(DRAW_LOG_KEY, JSON.stringify(log));
+  }
+
+  // Reactive mirror of localStorage so the Draw Log panel updates live;
+  // seeded from whatever was already persisted, so a relaunch shows history
+  // from before the app was closed.
+  const drawLogState = Vue.reactive({ entries: getDrawLog() });
+
+  function teamSnapshot(teamKey) {
+    const s = laxState();
+    const center = getCenterPlayer(teamKey);
+    const attrs = center ? getCenterAttrs(center.id) : null;
+    return {
+      name: s.teams[teamKey].name,
+      drawCall: s.drawCall[teamKey],
+      drawTechnique: attrs ? attrs.draw_technique : null,
+    };
+  }
+
+  // Called once per run: either from _startDraw()'s violation branch, or
+  // from _checkContest() once a winner's picked.
+  function recordDrawRun({ legal, winnerTeam, winnerPlayerLabel, scrum }) {
+    const entry = {
+      id: uid(),
+      timestamp: Date.now(),
+      teamA: teamSnapshot('a'),
+      teamB: teamSnapshot('b'),
+      legal,
+      winnerTeam: winnerTeam || null,
+      winnerPlayerLabel: winnerPlayerLabel || null,
+      scrum: !!scrum,
+      violation: !legal,
+    };
+    const log = getDrawLog();
+    log.unshift(entry); // most-recent-first, matches how the panel displays it
+    if (log.length > DRAW_LOG_MAX) log.length = DRAW_LOG_MAX;
+    persistDrawLog(log);
+    drawLogState.entries = log;
+  }
 
   // ─── Legal-draw check + arc physics ───────────────────────────────────────
   function checkLegalDraw(attrsA, attrsB) {
@@ -508,6 +567,7 @@
           scrum,
           contestType: isAirborne ? 'airborne' : 'ground',
         };
+        recordDrawRun({ legal: true, winnerTeam: winner.team, winnerPlayerLabel: winner.player.num, scrum });
         return true;
       },
 
@@ -587,6 +647,7 @@
         const outcome = computeDrawOutcome();
         if (!outcome.legal) {
           outcomeState.result = { type: 'violation' };
+          recordDrawRun({ legal: false });
           return;
         }
         this._callInfo = { controlling: outcome.controlling, action: outcome.action };
@@ -795,9 +856,83 @@
     },
   };
 
+  // ─── Draw log panel (step 6) ──────────────────────────────────────────────
+  // Cumulative history + a per-team tally, backed by the persisted log above.
+  // Visible whenever the Draw Circle tab is active, independent of whether a
+  // Draw Setup is currently on the field — it's a history browser, not a
+  // live-run readout like the outcome panel.
+  const DrawLogPanel = {
+    template: `
+      <div id="draw-log-panel" class="panel-section" v-show="visible">
+        <div class="draw-log-header">
+          <h3 class="panel-title">Draw Log</h3>
+          <button class="panel-btn-sm" @click="clearLog" title="Clear Draw Log">Clear</button>
+        </div>
+        <div class="draw-log-tally">
+          <div class="draw-log-tally-row" v-for="t in ['a','b']" :key="t">
+            <span class="draw-log-tally-dot" :style="{ background: teamColor(t) }"></span>
+            <span class="draw-log-tally-name">{{ teamName(t) }}</span>
+            <span class="draw-log-tally-stats">{{ tally[t].taken }} taken &middot; {{ tally[t].won }} won &middot; {{ tally[t].rate }}</span>
+          </div>
+        </div>
+        <div class="draw-log-list">
+          <div class="draw-log-entry" v-for="e in recent" :key="e.id">
+            <span class="draw-log-time">{{ formatTime(e.timestamp) }}</span>
+            <span class="draw-log-summary">{{ summarize(e) }}</span>
+          </div>
+          <div class="draw-log-empty" v-if="!recent.length">No draws run yet.</div>
+        </div>
+      </div>
+    `,
+    data() { return { visible: false }; },
+    computed: {
+      recent() { return drawLogState.entries.slice(0, DRAW_LOG_DISPLAY); },
+      tally() {
+        const t = { a: { taken: 0, won: 0 }, b: { taken: 0, won: 0 } };
+        drawLogState.entries.forEach(e => {
+          t.a.taken++;
+          t.b.taken++;
+          if (e.winnerTeam === 'a') t.a.won++;
+          if (e.winnerTeam === 'b') t.b.won++;
+        });
+        ['a', 'b'].forEach(k => {
+          t[k].rate = t[k].taken ? `${Math.round((t[k].won / t[k].taken) * 100)}%` : '—';
+        });
+        return t;
+      },
+    },
+    methods: {
+      teamName(t) { return laxState().teams[t].name; },
+      teamColor(t) { return laxState().teams[t].color; },
+      formatTime(ts) {
+        return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      },
+      summarize(e) {
+        const callSummary = `${e.teamA.name} called ${ACTION_LABELS[e.teamA.drawCall] || e.teamA.drawCall}, ${e.teamB.name} called ${ACTION_LABELS[e.teamB.drawCall] || e.teamB.drawCall}`;
+        if (e.violation) return `Short draw — no possession (${callSummary})`;
+        const winnerName = e.winnerTeam === 'a' ? e.teamA.name : e.teamB.name;
+        const tag = e.scrum ? ' (50/50 scrum)' : '';
+        const player = e.winnerPlayerLabel ? ` ${e.winnerPlayerLabel}` : '';
+        return `${winnerName}${player} won${tag} — ${callSummary}`;
+      },
+      clearLog() {
+        if (!confirm('Clear the draw log? This cannot be undone.')) return;
+        persistDrawLog([]);
+        drawLogState.entries = [];
+      },
+      _poll() { this.visible = currentView() === 'draw'; },
+    },
+    mounted() {
+      this._pollTimer = setInterval(() => this._poll(), 300);
+      this._poll();
+    },
+    beforeUnmount() { clearInterval(this._pollTimer); },
+  };
+
   Vue.createApp(SimPlaybackBar).mount('#sim-playback-mount');
   Vue.createApp(DrawCallBar).mount('#sim-draw-call-mount');
   Vue.createApp(DrawOutcomePanel).mount('#draw-outcome-mount');
+  Vue.createApp(DrawLogPanel).mount('#draw-log-mount');
   const attrsPanelVm = Vue.createApp(PlayerAttributesPanel).mount('#player-attrs-mount');
 
   // Clicking a center or circle/wing marker ('C'/'W1'/'W2') opens the
