@@ -1,9 +1,6 @@
 // Draw Sim — tick engine + playback controls (step 2), center mechanics
-// (step 3), and circle/wing player attributes + reaction/movement (step 4
-// of 6).
-//
-// No contest resolution yet (that's step 5) — a reacting circle/wing
-// player just stops once it's near the ball rather than "picking it up."
+// (step 3), circle/wing player attributes + reaction/movement (step 4),
+// and probabilistic contest resolution + outcome logging (step 5 of 6).
 //
 // Talks to renderer/app.js only through the small read-only bridge it
 // exposes (window._laxState, window._laxGetView) and the shared fabric
@@ -16,7 +13,11 @@
   const ARC_TICKS = 12;         // ~3s for the whistle-to-landing arc
   const ARC_MAX_HEIGHT = 34;    // px — purely visual, drives the shadow offset
   const WING_SPEED_PX_PER_TICK = 4;  // px per tick at speed=1
-  const WING_SETTLE_RADIUS = 12;     // px — "close enough" to the ball to stop
+  const CONTEST_RADIUS = 14;         // px — close enough to the ball to contest it
+  const CATCHABLE_Z = 18;            // px — ball height below which it's reachable
+  const CONTEST_WINDOW_TICKS = 3;    // grace ticks after the first arrival, so a
+                                      // trailing opponent can still get in on the roll
+  const SCRUM_MARGIN = 0.15;         // relative weight gap under which it's a "50/50"
 
   const canvas = window._fabricCanvas;
 
@@ -110,7 +111,12 @@
   const wingAttrsStore = Vue.reactive({});
 
   function defaultWingAttrs() {
-    return { speed: 3, anticipation: 3, vertical: 3, ground_ball: 3, positioning_discipline: 3 };
+    // energy added in step 5: the contest-weighting requirement calls for an
+    // energy multiplier, but the step 3/4 wing attribute set (taken from the
+    // original design doc entity list) never included one — centers had it,
+    // wings didn't. Extending the set here rather than reusing a mismatched
+    // stand-in attribute; see the design doc for the corrected entity list.
+    return { speed: 3, anticipation: 3, vertical: 3, ground_ball: 3, positioning_discipline: 3, energy: 3 };
   }
 
   function getWingAttrs(playerId) {
@@ -123,6 +129,19 @@
     const s = laxState();
     if (s && !s.drawCall) s.drawCall = { a: 'cleanCatch', b: 'cleanCatch' };
   })();
+
+  const ACTION_LABELS = {
+    cleanCatch: 'Clean Catch',
+    batOpen: 'Bat to Open Space',
+    batLeft: 'Bat to Left Teammate',
+    batRight: 'Bat to Right Teammate',
+  };
+
+  // ─── Outcome log (shared between the playback bar and the outcome panel) ──
+  // Populated once per run: on a short-draw violation, or once the contest
+  // resolves. Cleared on Reset / a fresh Draw Setup so a stale result never
+  // outlives the field state it described.
+  const outcomeState = Vue.reactive({ result: null });
 
   // ─── Legal-draw check + arc physics ───────────────────────────────────────
   function checkLegalDraw(attrsA, attrsB) {
@@ -259,9 +278,6 @@
   const SimPlaybackBar = {
     template: `
       <div id="sim-playback-wrap" v-show="visible">
-        <div class="sim-violation-banner" v-if="violation">
-          ⚠ Short draw — the ball didn't clear both centers. Raise draw_technique or try again.
-        </div>
         <div id="sim-playback-bar">
           <button class="sim-btn" @click="stepBack" :disabled="playing || currentTick <= 0" title="Step Back">⏮</button>
           <button class="sim-btn primary" @click="togglePlay" :disabled="atEnd && !playing" :title="playing ? 'Pause' : 'Play'">
@@ -291,7 +307,6 @@
         currentTick: 0,
         historyLength: 0,
         maxTicks: MAX_TICKS,
-        violation: false,
       };
     },
     computed: {
@@ -307,6 +322,10 @@
       this._timer = null;
       this._arcQueue = null;
       this._wingRuntime = null;
+      this._ballZ = 0;
+      this._possession = null;
+      this._contestWindow = null;
+      this._callInfo = null;
 
       // Any drag/reposition of a sim marker while paused marks the current
       // tick "dirty" — the next advance discards recorded future ticks and
@@ -363,27 +382,30 @@
           this.historyLength = 1;
           this._arcQueue = null;
           this._wingRuntime = null;
-          this.violation = false;
+          this._ballZ = 0;
+          this._possession = null;
+          this._contestWindow = null;
+          this._callInfo = null;
+          outcomeState.result = null;
         }
         this.visible = true;
       },
 
       // Moves each circle/wing player one tick's worth toward its predicted
-      // landing point (or leaves it alone if still IDLE/already SETTLED).
-      // Runs post-whistle, in lockstep with the ball's own arc/rest ticks.
+      // landing point (or leaves it alone if still IDLE, or if a contest has
+      // already resolved). Runs post-whistle, in lockstep with the ball's own
+      // arc/rest ticks. Reaching the ball is handled separately by
+      // _checkContest() below — this method never stops a player on its own.
       _updateWingPlayers() {
         if (!this._wingRuntime) return;
         const s = laxState();
-        const ballGround = this._shadowObj
-          ? { left: this._shadowObj.left, top: this._shadowObj.top }
-          : { left: s.ball.left, top: s.ball.top };
 
         ['a', 'b'].forEach(team => {
           ['W1', 'W2'].forEach(num => {
             const player = s.teams[team].players.find(p => p.num === num);
             if (!player) return;
             const rt = this._wingRuntime[player.id];
-            if (!rt || rt.state === 'SETTLED') return;
+            if (!rt) return;
 
             if (rt.state === 'IDLE') {
               rt.reactionDelay--;
@@ -392,11 +414,6 @@
             }
 
             const obj = player.circleObj;
-            const pos = { left: obj.left, top: obj.top };
-            if (dist(pos, ballGround) < WING_SETTLE_RADIUS) {
-              rt.state = 'SETTLED';
-              return;
-            }
             const toTarget = { left: rt.predictedTarget.left - obj.left, top: rt.predictedTarget.top - obj.top };
             const distToTarget = Math.hypot(toTarget.left, toTarget.top);
             if (distToTarget < 1) return; // reached its (possibly wrong) read — nothing more to do
@@ -409,34 +426,132 @@
         canvas.requestRenderAll();
       },
 
+      // Checks whether the ball is close to being caught or scooped up.
+      // Anyone within CONTEST_RADIUS while the ball's at or below catchable
+      // height joins a short grace window (CONTEST_WINDOW_TICKS) so a
+      // trailing opponent has a real chance to get in on the roll before it
+      // resolves — otherwise whoever merely arrives first would always win
+      // outright, and the weighted contest in requirement 2 would rarely
+      // matter. Returns true the tick it actually resolves a winner.
+      _checkContest() {
+        if (this._possession || !this._wingRuntime) return false;
+        if (this._ballZ > CATCHABLE_Z) return false;
+
+        const s = laxState();
+        const ballGround = this._shadowObj
+          ? { left: this._shadowObj.left, top: this._shadowObj.top }
+          : { left: s.ball.left, top: s.ball.top };
+
+        const nearby = [];
+        ['a', 'b'].forEach(team => {
+          ['W1', 'W2'].forEach(num => {
+            const player = s.teams[team].players.find(p => p.num === num);
+            if (!player) return;
+            if (dist({ left: player.circleObj.left, top: player.circleObj.top }, ballGround) <= CONTEST_RADIUS) {
+              nearby.push({ player, team });
+            }
+          });
+        });
+
+        if (!this._contestWindow) {
+          if (!nearby.length) return false;
+          this._contestWindow = { ticksLeft: CONTEST_WINDOW_TICKS, byId: new Map() };
+        }
+        nearby.forEach(c => this._contestWindow.byId.set(c.player.id, c));
+        this._contestWindow.ticksLeft--;
+        if (this._contestWindow.ticksLeft > 0) return false;
+
+        const isAirborne = this._ballZ > 0;
+        const weighted = [...this._contestWindow.byId.values()].map(c => {
+          const attrs = getWingAttrs(c.player.id);
+          const base = isAirborne
+            ? attrs.speed + attrs.vertical
+            : attrs.ground_ball + attrs.positioning_discipline;
+          return { ...c, weight: Math.max(0.01, base * (attrs.energy / 5)) };
+        });
+
+        // Weighted random roll — deliberately non-deterministic. Normalizing
+        // to probabilities first would be equivalent to this cumulative-sum
+        // draw, so we skip the intermediate step.
+        const total = weighted.reduce((sum, c) => sum + c.weight, 0);
+        let r = Math.random() * total;
+        let winner = weighted[weighted.length - 1];
+        for (const c of weighted) {
+          if (r < c.weight) { winner = c; break; }
+          r -= c.weight;
+        }
+
+        // "50/50" means the two TEAMS are close, not any two individual
+        // players — two teammates with identical attributes both being in
+        // range would otherwise always tie with each other and falsely read
+        // as a scrum even when their team heavily outweighs the opponent.
+        const teamTotals = {};
+        weighted.forEach(c => { teamTotals[c.team] = (teamTotals[c.team] || 0) + c.weight; });
+        const teamsPresent = Object.keys(teamTotals);
+        let scrum = false;
+        if (teamsPresent.length === 2) {
+          const [t1, t2] = teamsPresent;
+          scrum = Math.abs(teamTotals[t1] - teamTotals[t2]) / Math.max(teamTotals[t1], teamTotals[t2]) <= SCRUM_MARGIN;
+        }
+
+        const winPos = { left: winner.player.circleObj.left, top: winner.player.circleObj.top };
+        s.ball.set(winPos).setCoords();
+        if (this._shadowObj) this._shadowObj.set(winPos).setCoords();
+        this._ballZ = 0;
+        this._possession = { team: winner.team, playerId: winner.player.id };
+
+        outcomeState.result = {
+          type: 'resolved',
+          callingTeam: this._callInfo ? this._callInfo.controlling : null,
+          action: this._callInfo ? this._callInfo.action : null,
+          winnerTeam: winner.team,
+          scrum,
+          contestType: isAirborne ? 'airborne' : 'ground',
+        };
+        return true;
+      },
+
       _pushNewTick() {
-        if (this.historyLength >= this.maxTicks) return;
+        if (this.historyLength >= this.maxTicks) return false;
         if (this._arcQueue && this._arcQueue.length) {
           const frame = this._arcQueue.shift();
           const ball = laxState().ball;
           ball.set({ left: frame.groundLeft, top: frame.groundTop - frame.z }).setCoords();
           if (this._shadowObj) this._shadowObj.set({ left: frame.groundLeft, top: frame.groundTop }).setCoords();
+          this._ballZ = frame.z;
           canvas.requestRenderAll();
+        } else if (this._wingRuntime && !this._possession) {
+          this._ballZ = 0; // arc's done; ball rests until someone wins the contest
         }
-        if (this._wingRuntime) this._updateWingPlayers();
+
+        let resolved = false;
+        if (this._wingRuntime && !this._possession) {
+          this._updateWingPlayers();
+          resolved = this._checkContest();
+        }
+
         const captured = captureTick(this._objs);
         this._history.push(captured);
         this.historyLength = this._history.length;
         this.currentTick = this.historyLength - 1;
+        return resolved;
       },
 
-      // Shared by Step Forward and the Play loop.
+      // Shared by Step Forward and the Play loop. Returns true if this
+      // advance is the one that resolved the contest (so the Play loop
+      // knows to stop the clock right here, same idea as arcJustFinished).
       _advance() {
         if (this._dirty) {
           this._history = this._history.slice(0, this.currentTick + 1);
           this.historyLength = this._history.length;
           this._dirty = false;
-          this._pushNewTick();
+          return this._pushNewTick();
         } else if (this.currentTick < this.historyLength - 1) {
           this.currentTick++;
           applyTick(this._history[this.currentTick]);
+          return false;
         } else {
-          this._pushNewTick();
+          return this._pushNewTick();
         }
       },
 
@@ -468,14 +583,18 @@
       },
 
       _startDraw() {
-        this.violation = false;
+        outcomeState.result = null;
         const outcome = computeDrawOutcome();
         if (!outcome.legal) {
-          this.violation = true;
+          outcomeState.result = { type: 'violation' };
           return;
         }
+        this._callInfo = { controlling: outcome.controlling, action: outcome.action };
         this._arcQueue = outcome.frames;
         this._wingRuntime = setupWingRuntime(outcome.finalGroundTarget, outcome.controlling, outcome.action);
+        this._ballZ = 0;
+        this._possession = null;
+        this._contestWindow = null;
         this.playing = true;
         this._scheduleTick();
       },
@@ -490,12 +609,16 @@
         const delay = TICK_MS / this.speed;
         this._timer = setTimeout(() => {
           const wasArcInFlight = !!(this._arcQueue && this._arcQueue.length);
-          this._advance();
-          const arcJustFinished = wasArcInFlight && !(this._arcQueue && this._arcQueue.length);
-          if (this.playing && !this.atEnd && !arcJustFinished) {
+          const contestResolvedNow = this._advance();
+          // Don't auto-pause on "the arc just landed" if a contest window is
+          // already counting down (someone's in range) — otherwise the arc's
+          // own end-of-flight pause would cut the window off mid-count and
+          // the trailing side would never get a chance to join the roll.
+          const arcJustFinished = wasArcInFlight && !(this._arcQueue && this._arcQueue.length) && !this._contestWindow;
+          if (this.playing && !this.atEnd && !arcJustFinished && !contestResolvedNow) {
             this._scheduleTick();
           } else {
-            this.playing = false; // auto-pause once the arc lands — "let it sit"
+            this.playing = false; // auto-pause once the arc lands, the contest resolves, or nothing's nearby yet
           }
         }, delay);
       },
@@ -508,7 +631,11 @@
         this._dirty = false;
         this._arcQueue = null;
         this._wingRuntime = null;
-        this.violation = false;
+        this._ballZ = 0;
+        this._possession = null;
+        this._contestWindow = null;
+        this._callInfo = null;
+        outcomeState.result = null;
         applyTick(this._history[0]);
       },
 
@@ -562,13 +689,14 @@
     experience: 'Experience',
     energy: 'Energy',
   };
-  const WING_ATTR_KEYS = ['speed', 'anticipation', 'vertical', 'ground_ball', 'positioning_discipline'];
+  const WING_ATTR_KEYS = ['speed', 'anticipation', 'vertical', 'ground_ball', 'positioning_discipline', 'energy'];
   const WING_ATTR_LABELS = {
     speed: 'Speed',
     anticipation: 'Anticipation',
     vertical: 'Vertical',
     ground_ball: 'Ground Ball',
     positioning_discipline: 'Positioning',
+    energy: 'Energy',
   };
   const WING_MARKER_TITLES = { W1: 'Circle 1', W2: 'Circle 2' };
 
@@ -631,8 +759,45 @@
     },
   };
 
+  // ─── Draw outcome panel ───────────────────────────────────────────────────
+  // One line summarizing the last completed run: who called it, what they
+  // called, and how it came out. Persisted stats capture is step 6 — this is
+  // just the on-screen readout, cleared on Reset/a fresh Draw Setup.
+  const DrawOutcomePanel = {
+    template: `
+      <div id="draw-outcome-panel" v-if="result">
+        <span class="outcome-badge" :class="badgeClass">{{ badgeLabel }}</span>
+        <span class="outcome-text" v-if="result.type === 'violation'">
+          Ball didn't clear both centers — no possession.
+        </span>
+        <span class="outcome-text" v-else>
+          {{ teamName(result.callingTeam) }} called "{{ actionLabel(result.action) }}" —
+          {{ teamName(result.winnerTeam) }} won the {{ result.contestType === 'airborne' ? 'airborne' : 'ground-ball' }} contest and gains possession.
+        </span>
+      </div>
+    `,
+    computed: {
+      result() { return outcomeState.result; },
+      badgeClass() {
+        if (!this.result) return '';
+        if (this.result.type === 'violation') return 'violation';
+        return this.result.scrum ? 'scrum' : 'resolved';
+      },
+      badgeLabel() {
+        if (!this.result) return '';
+        if (this.result.type === 'violation') return 'Short Draw';
+        return this.result.scrum ? '50/50 Scrum' : 'Resolved';
+      },
+    },
+    methods: {
+      teamName(t) { return t ? laxState().teams[t].name : 'Someone'; },
+      actionLabel(a) { return ACTION_LABELS[a] || a; },
+    },
+  };
+
   Vue.createApp(SimPlaybackBar).mount('#sim-playback-mount');
   Vue.createApp(DrawCallBar).mount('#sim-draw-call-mount');
+  Vue.createApp(DrawOutcomePanel).mount('#draw-outcome-mount');
   const attrsPanelVm = Vue.createApp(PlayerAttributesPanel).mount('#player-attrs-mount');
 
   // Clicking a center or circle/wing marker ('C'/'W1'/'W2') opens the
