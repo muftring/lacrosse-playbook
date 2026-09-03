@@ -980,6 +980,90 @@ html, body {
   color: #e57373;
 }
 
+/* Draw log panel */
+.draw-log-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.draw-log-header .panel-title {
+  margin-bottom: 0;
+}
+
+.draw-log-tally {
+  padding-bottom: 10px;
+  margin-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.draw-log-tally-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.draw-log-tally-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.draw-log-tally-name {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text);
+  flex-shrink: 0;
+}
+
+.draw-log-tally-stats {
+  font-size: 10px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.draw-log-list {
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.draw-log-entry {
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.draw-log-entry:last-child {
+  border-bottom: none;
+}
+
+.draw-log-time {
+  display: block;
+  font-size: 9px;
+  color: var(--text-dim);
+  margin-bottom: 2px;
+}
+
+.draw-log-summary {
+  display: block;
+  font-size: 10.5px;
+  color: var(--text);
+  line-height: 1.35;
+}
+
+.draw-log-empty {
+  font-size: 11px;
+  color: var(--text-dim);
+  padding: 8px 0;
+  text-align: center;
+}
+
 /* Scrollbar */
 ::-webkit-scrollbar { width: 5px; }
 ::-webkit-scrollbar-track { background: transparent; }
