@@ -1,10 +1,9 @@
-// Draw Sim — tick engine + playback controls (step 2) and center mechanics
-// (step 3 of 6): center attributes, action selector, ball arc physics, and
-// the legal-draw check.
+// Draw Sim — tick engine + playback controls (step 2), center mechanics
+// (step 3), and circle/wing player attributes + reaction/movement (step 4
+// of 6).
 //
-// No circle-player reaction/movement or contest resolution yet — that's
-// steps 4-5. This step only makes the ball do something on the whistle and
-// proves the attribute/action inputs that later steps will read.
+// No contest resolution yet (that's step 5) — a reacting circle/wing
+// player just stops once it's near the ball rather than "picking it up."
 //
 // Talks to renderer/app.js only through the small read-only bridge it
 // exposes (window._laxState, window._laxGetView) and the shared fabric
@@ -16,6 +15,8 @@
   const MAX_TICKS = 120;        // ~30s draw at 250ms/tick
   const ARC_TICKS = 12;         // ~3s for the whistle-to-landing arc
   const ARC_MAX_HEIGHT = 34;    // px — purely visual, drives the shadow offset
+  const WING_SPEED_PX_PER_TICK = 4;  // px per tick at speed=1
+  const WING_SETTLE_RADIUS = 12;     // px — "close enough" to the ball to stop
 
   const canvas = window._fabricCanvas;
 
@@ -56,10 +57,14 @@
     canvas.requestRenderAll();
   }
 
+  function lerp(a, b, t) { return a + (b - a) * t; }
+  function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+  function dist(p1, p2) { return Math.hypot(p1.left - p2.left, p1.top - p2.top); }
+
   // ─── Center attributes ────────────────────────────────────────────────────
   // Keyed by player id (survives a marker's own object identity changing on
-  // resize/reload) rather than stored on the player record, so this step
-  // stays decoupled from app.js's placePlayer()/placeDrawSetup(). Wrapped in
+  // resize/reload) rather than stored on the player record, so this stays
+  // decoupled from app.js's placePlayer()/placeDrawSetup(). Wrapped in
   // Vue.reactive so the attributes panel below updates live.
   const centerAttrsStore = Vue.reactive({});
 
@@ -84,6 +89,35 @@
     return s.teams[teamKey].players.find(p => p.num === 'C') || null;
   }
 
+  function tendencyIsValid(tendency) {
+    const { batLeft, cleanCatch, batRight } = tendency;
+    if (batLeft === '' || cleanCatch === '' || batRight === '') return false;
+    return Number(batLeft) + Number(cleanCatch) + Number(batRight) === 100;
+  }
+
+  // The action a center's tendency profile says they favor most.
+  function dominantTendencyAction(tendency) {
+    const entries = [
+      ['batLeft', Number(tendency.batLeft)],
+      ['cleanCatch', Number(tendency.cleanCatch)],
+      ['batRight', Number(tendency.batRight)],
+    ];
+    entries.sort((a, b) => b[1] - a[1]);
+    return entries[0][0];
+  }
+
+  // ─── Circle/wing attributes ───────────────────────────────────────────────
+  const wingAttrsStore = Vue.reactive({});
+
+  function defaultWingAttrs() {
+    return { speed: 3, anticipation: 3, vertical: 3, ground_ball: 3, positioning_discipline: 3 };
+  }
+
+  function getWingAttrs(playerId) {
+    if (!wingAttrsStore[playerId]) wingAttrsStore[playerId] = defaultWingAttrs();
+    return wingAttrsStore[playerId];
+  }
+
   // ─── Draw call (per-team action selection) ───────────────────────────────
   (function ensureDrawCallDefaults() {
     const s = laxState();
@@ -101,9 +135,6 @@
   function posOf(player) {
     return player ? { left: player.circleObj.left, top: player.circleObj.top } : null;
   }
-
-  function lerp(a, b, t) { return a + (b - a) * t; }
-  function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 
   function midpointExtended(p1, p2, origin, extend) {
     const mid = { left: (p1.left + p2.left) / 2, top: (p1.top + p2.top) / 2 };
@@ -141,7 +172,6 @@
     if (!checkLegalDraw(attrsA, attrsB)) return { legal: false };
 
     const controlling = attrsA.draw_technique >= attrsB.draw_technique ? 'a' : 'b';
-    const opposing = controlling === 'a' ? 'b' : 'a';
     const controllingAttrs = controlling === 'a' ? attrsA : attrsB;
     const opposingAttrs = controlling === 'a' ? attrsB : attrsA;
     const action = s.drawCall[controlling];
@@ -170,7 +200,59 @@
     finalTarget.left += (Math.random() * 2 - 1) * jitter;
     finalTarget.top += (Math.random() * 2 - 1) * jitter;
 
-    return { legal: true, frames: generateArcFrames(startPos, finalTarget, ARC_TICKS, ARC_MAX_HEIGHT) };
+    return {
+      legal: true,
+      frames: generateArcFrames(startPos, finalTarget, ARC_TICKS, ARC_MAX_HEIGHT),
+      controlling,
+      action,
+      finalGroundTarget: finalTarget,
+    };
+  }
+
+  // ─── Circle/wing reaction state machine ──────────────────────────────────
+  // IDLE (counting down reaction delay) -> REACT (moving toward a predicted
+  // landing point) -> SETTLED (close enough to the ball, stop). Set up once
+  // per whistle from computeDrawOutcome()'s result; advanced one tick at a
+  // time from _pushNewTick() below, right alongside the ball's own arc.
+  function setupWingRuntime(finalGroundTarget, controllingTeam, action) {
+    const s = laxState();
+    const runtime = {};
+    ['a', 'b'].forEach(team => {
+      const opposingCenterTeam = team === 'a' ? 'b' : 'a';
+      const oppCenter = getCenterPlayer(opposingCenterTeam);
+      const oppAttrs = oppCenter ? getCenterAttrs(oppCenter.id) : null;
+      // Scouting bonus: this team reads the opposing center's tendency. It
+      // only pays off when that center is the one actually controlling the
+      // draw this run, and their chosen action matches their own tendency.
+      let anticipationBonus = 0;
+      if (opposingCenterTeam === controllingTeam && oppAttrs && tendencyIsValid(oppAttrs.tendency)) {
+        if (dominantTendencyAction(oppAttrs.tendency) === action) anticipationBonus = 1;
+      }
+
+      ['W1', 'W2'].forEach(num => {
+        const player = s.teams[team].players.find(p => p.num === num);
+        if (!player) return;
+        const attrs = getWingAttrs(player.id);
+        const effectiveAnticipation = clamp(attrs.anticipation + anticipationBonus, 1, 5);
+
+        // Lower anticipation = slower to react and a worse read on where
+        // the ball's actually headed.
+        const reactionDelay = clamp(5 - effectiveAnticipation, 0, 4);
+        const errorMag = (5 - effectiveAnticipation) * 6; // px
+        const angle = Math.random() * Math.PI * 2;
+        const predictedTarget = {
+          left: finalGroundTarget.left + Math.cos(angle) * errorMag,
+          top: finalGroundTarget.top + Math.sin(angle) * errorMag,
+        };
+
+        runtime[player.id] = {
+          state: reactionDelay > 0 ? 'IDLE' : 'REACT',
+          reactionDelay,
+          predictedTarget,
+        };
+      });
+    });
+    return runtime;
   }
 
   // ─── Playback bar (tick engine + Play/Pause/Step/Reset) ──────────────────
@@ -224,6 +306,7 @@
       this._dirty = false;
       this._timer = null;
       this._arcQueue = null;
+      this._wingRuntime = null;
 
       // Any drag/reposition of a sim marker while paused marks the current
       // tick "dirty" — the next advance discards recorded future ticks and
@@ -279,9 +362,51 @@
           this.currentTick = 0;
           this.historyLength = 1;
           this._arcQueue = null;
+          this._wingRuntime = null;
           this.violation = false;
         }
         this.visible = true;
+      },
+
+      // Moves each circle/wing player one tick's worth toward its predicted
+      // landing point (or leaves it alone if still IDLE/already SETTLED).
+      // Runs post-whistle, in lockstep with the ball's own arc/rest ticks.
+      _updateWingPlayers() {
+        if (!this._wingRuntime) return;
+        const s = laxState();
+        const ballGround = this._shadowObj
+          ? { left: this._shadowObj.left, top: this._shadowObj.top }
+          : { left: s.ball.left, top: s.ball.top };
+
+        ['a', 'b'].forEach(team => {
+          ['W1', 'W2'].forEach(num => {
+            const player = s.teams[team].players.find(p => p.num === num);
+            if (!player) return;
+            const rt = this._wingRuntime[player.id];
+            if (!rt || rt.state === 'SETTLED') return;
+
+            if (rt.state === 'IDLE') {
+              rt.reactionDelay--;
+              if (rt.reactionDelay <= 0) rt.state = 'REACT';
+              return;
+            }
+
+            const obj = player.circleObj;
+            const pos = { left: obj.left, top: obj.top };
+            if (dist(pos, ballGround) < WING_SETTLE_RADIUS) {
+              rt.state = 'SETTLED';
+              return;
+            }
+            const toTarget = { left: rt.predictedTarget.left - obj.left, top: rt.predictedTarget.top - obj.top };
+            const distToTarget = Math.hypot(toTarget.left, toTarget.top);
+            if (distToTarget < 1) return; // reached its (possibly wrong) read — nothing more to do
+            const attrs = getWingAttrs(player.id);
+            const step = attrs.speed * WING_SPEED_PX_PER_TICK;
+            const t = Math.min(1, step / distToTarget);
+            obj.set({ left: obj.left + toTarget.left * t, top: obj.top + toTarget.top * t }).setCoords();
+          });
+        });
+        canvas.requestRenderAll();
       },
 
       _pushNewTick() {
@@ -293,6 +418,7 @@
           if (this._shadowObj) this._shadowObj.set({ left: frame.groundLeft, top: frame.groundTop }).setCoords();
           canvas.requestRenderAll();
         }
+        if (this._wingRuntime) this._updateWingPlayers();
         const captured = captureTick(this._objs);
         this._history.push(captured);
         this.historyLength = this._history.length;
@@ -329,8 +455,8 @@
       togglePlay() { this.playing ? this.pause() : this.play(); },
 
       // Pressing Play from tick 0 is "the whistle" — run the legal-draw
-      // check and, if it clears, queue up the ball's arc before falling
-      // into the normal tick loop.
+      // check and, if it clears, queue up the ball's arc and the circle/wing
+      // reaction state machine before falling into the normal tick loop.
       play() {
         if (this.atEnd) return;
         if (this.currentTick === 0 && this.historyLength === 1) {
@@ -349,6 +475,7 @@
           return;
         }
         this._arcQueue = outcome.frames;
+        this._wingRuntime = setupWingRuntime(outcome.finalGroundTarget, outcome.controlling, outcome.action);
         this.playing = true;
         this._scheduleTick();
       },
@@ -380,6 +507,7 @@
         this.currentTick = 0;
         this._dirty = false;
         this._arcQueue = null;
+        this._wingRuntime = null;
         this.violation = false;
         applyTick(this._history[0]);
       },
@@ -425,30 +553,39 @@
     beforeUnmount() { clearInterval(this._pollTimer); },
   };
 
-  // ─── Center attributes panel ──────────────────────────────────────────────
-  const ATTR_KEYS = ['draw_technique', 'reaction_time', 'reach', 'experience', 'energy'];
-  const ATTR_LABELS = {
+  // ─── Player attributes panel (centers from step 3, circle/wings here) ────
+  const CENTER_ATTR_KEYS = ['draw_technique', 'reaction_time', 'reach', 'experience', 'energy'];
+  const CENTER_ATTR_LABELS = {
     draw_technique: 'Draw Technique',
     reaction_time: 'Reaction Time',
     reach: 'Reach',
     experience: 'Experience',
     energy: 'Energy',
   };
+  const WING_ATTR_KEYS = ['speed', 'anticipation', 'vertical', 'ground_ball', 'positioning_discipline'];
+  const WING_ATTR_LABELS = {
+    speed: 'Speed',
+    anticipation: 'Anticipation',
+    vertical: 'Vertical',
+    ground_ball: 'Ground Ball',
+    positioning_discipline: 'Positioning',
+  };
+  const WING_MARKER_TITLES = { W1: 'Circle 1', W2: 'Circle 2' };
 
-  const CenterAttributesPanel = {
+  const PlayerAttributesPanel = {
     template: `
-      <div id="center-attrs-panel" v-show="visible">
-        <div class="center-attrs-header">
+      <div id="player-attrs-panel" v-show="visible">
+        <div class="player-attrs-header">
           <span>{{ title }}</span>
           <button class="panel-btn-sm" @click="close" title="Close">✕</button>
         </div>
-        <div class="center-attrs-body" v-if="attrs">
+        <div class="player-attrs-body" v-if="attrs">
           <div class="attr-row" v-for="key in attrKeys" :key="key">
             <span class="attr-name">{{ attrLabels[key] }}</span>
             <input type="range" min="1" max="5" step="1" v-model.number="attrs[key]" />
             <span class="attr-value">{{ attrs[key] }}</span>
           </div>
-          <div class="tendency-section">
+          <div class="tendency-section" v-if="isCenter">
             <div class="panel-label">Tendency profile (optional — blank = unknown)</div>
             <div class="tendency-row">
               <label>Bat L <input type="number" min="0" max="100" v-model="attrs.tendency.batLeft"></label>
@@ -461,12 +598,18 @@
       </div>
     `,
     data() {
-      return { visible: false, playerId: null, title: '', attrKeys: ATTR_KEYS, attrLabels: ATTR_LABELS };
+      return { visible: false, playerId: null, markerType: null, title: '' };
     },
     computed: {
-      attrs() { return this.playerId != null ? getCenterAttrs(this.playerId) : null; },
+      isCenter() { return this.markerType === 'C'; },
+      attrKeys() { return this.isCenter ? CENTER_ATTR_KEYS : WING_ATTR_KEYS; },
+      attrLabels() { return this.isCenter ? CENTER_ATTR_LABELS : WING_ATTR_LABELS; },
+      attrs() {
+        if (this.playerId == null) return null;
+        return this.isCenter ? getCenterAttrs(this.playerId) : getWingAttrs(this.playerId);
+      },
       tendencySum() {
-        if (!this.attrs) return null;
+        if (!this.isCenter || !this.attrs) return null;
         const { batLeft, cleanCatch, batRight } = this.attrs.tendency;
         if (batLeft === '' || cleanCatch === '' || batRight === '') return null;
         return Number(batLeft) + Number(cleanCatch) + Number(batRight);
@@ -477,9 +620,11 @@
       },
     },
     methods: {
-      open(playerId, teamName) {
+      open(playerId, teamName, markerType) {
         this.playerId = playerId;
-        this.title = `${teamName} Center`;
+        this.markerType = markerType;
+        const roleTitle = markerType === 'C' ? 'Center' : WING_MARKER_TITLES[markerType];
+        this.title = `${teamName} ${roleTitle}`;
         this.visible = true;
       },
       close() { this.visible = false; },
@@ -488,12 +633,12 @@
 
   Vue.createApp(SimPlaybackBar).mount('#sim-playback-mount');
   Vue.createApp(DrawCallBar).mount('#sim-draw-call-mount');
-  const attrsPanelVm = Vue.createApp(CenterAttributesPanel).mount('#center-attrs-mount');
+  const attrsPanelVm = Vue.createApp(PlayerAttributesPanel).mount('#player-attrs-mount');
 
-  // Clicking a center marker (label 'C') opens the attributes panel. Only
-  // acts in the select tool, and only reads the click — the existing
-  // Select/Player/Arrow/Text handling in app.js's own mouse:down listener
-  // is untouched.
+  // Clicking a center or circle/wing marker ('C'/'W1'/'W2') opens the
+  // attributes panel. Only acts in the select tool, and only reads the
+  // click — the existing Select/Player/Arrow/Text handling in app.js's own
+  // mouse:down listener is untouched.
   canvas.on('mouse:down', (opt) => {
     const s = laxState();
     if (!s || s.tool !== 'select') return;
@@ -502,8 +647,8 @@
     const teamKey = target._team;
     const team = s.teams[teamKey];
     const player = team && team.players.find(p => p.id === target._playerId);
-    if (player && player.num === 'C') {
-      attrsPanelVm.open(player.id, team.name);
+    if (player && (player.num === 'C' || player.num === 'W1' || player.num === 'W2')) {
+      attrsPanelVm.open(player.id, team.name, player.num);
     }
   });
 })();
