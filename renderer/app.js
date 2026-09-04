@@ -270,23 +270,35 @@
   });
 
   // ─── Add player ───────────────────────────────────────────────────────────────
+  const POSITIONS = ['Attack', 'Midfield', 'Defense', 'Goalie'];
+
   function addPlayer(x, y) {
     const team = state.teams[state.activeTeam];
     const playerNum = team.players.length + 1;
     const defaultName = `${team.name} #${playerNum}`;
 
     showModal('Add Player', [
-      { id: 'pname', label: 'Player name (optional)', type: 'text', placeholder: defaultName }
+      { id: 'pname', label: 'Player name (optional)', type: 'text', placeholder: defaultName },
+      { id: 'pnumber', label: 'Jersey number (0-99)', type: 'number', min: 0, max: 99, placeholder: String(playerNum) },
+      { id: 'pposition', label: 'Position', type: 'select', options: [
+        { value: '', label: '— (none)' },
+        ...POSITIONS.map(p => ({ value: p, label: p })),
+      ] },
     ], (values) => {
       const name = values.pname.trim() || defaultName;
-      placePlayer(state.activeTeam, x, y, name, playerNum);
+      const numRaw = values.pnumber.trim();
+      const jerseyNumber = numRaw === '' ? playerNum : Math.max(0, Math.min(99, parseInt(numRaw, 10) || 0));
+      const position = values.pposition || null;
+      placePlayer(state.activeTeam, x, y, name, jerseyNumber, position);
       renderRosters();
       setTool('select');
     });
   }
 
-  // Shared player placement (no modal) — cx/cy are canvas pixel coordinates (group center)
-  function placePlayer(teamKey, cx, cy, name, displayLabel) {
+  // Shared player placement (no modal) — cx/cy are canvas pixel coordinates (group center).
+  // position is optional — only individually-added players (via addPlayer()) carry one;
+  // formation/Draw Setup presets pass no position and stay generic (label-only), by design.
+  function placePlayer(teamKey, cx, cy, name, displayLabel, position) {
     const team = state.teams[teamKey];
     const playerId = state.nextPlayerId++;
     const radius = 13;
@@ -324,10 +336,11 @@
       _playerId: playerId,
       _team: teamKey,
       _playerName: name,
+      _position: position || null,
     });
 
     canvas.add(group);
-    const player = { id: playerId, name, num: displayLabel, circleObj: group, innerCircle: circle };
+    const player = { id: playerId, name, num: displayLabel, position: position || null, circleObj: group, innerCircle: circle };
     team.players.push(player);
     return player;
   }
@@ -398,9 +411,13 @@
       state.teams[t].players.forEach(p => {
         const item = document.createElement('div');
         item.className = 'roster-item';
+        const positionTag = p.position
+          ? `<span class="roster-position roster-position-${p.position.toLowerCase()}" title="${p.position}">${p.position[0]}</span>`
+          : '';
         item.innerHTML = `
           <div class="roster-dot" style="background:${state.teams[t].color}"></div>
           <span class="roster-name">${p.name}</span>
+          ${positionTag}
         `;
         item.addEventListener('click', () => {
           canvas.setActiveObject(p.circleObj);
@@ -986,6 +1003,7 @@
               id: obj._playerId,
               name: obj._playerName || 'Player',
               num: obj._playerId,
+              position: obj._position || null,
               circleObj: obj,
               innerCircle,
             });
@@ -1003,7 +1021,7 @@
     const objects = canvas.getObjects()
       .filter(o => !o._isFieldObject && !o._isPreview)
       .map(o => o.toObject([
-        '_playerId','_team','_playerName',
+        '_playerId','_team','_playerName','_position',
         '_arrowObject','_textBox','shaftWidth','headWidth','headLength',
         '_x1','_y1','_x2','_y2','_isBall'
       ]));
@@ -1134,7 +1152,7 @@
             const team = state.teams[obj._team];
             if (!team.players.find(p => p.id === obj._playerId)) {
               const innerCircle = obj.type === 'group' ? obj.getObjects('circle')[0] || null : null;
-              team.players.push({ id: obj._playerId, name: obj._playerName || 'Player', num: obj._playerId, circleObj: obj, innerCircle });
+              team.players.push({ id: obj._playerId, name: obj._playerName || 'Player', num: obj._playerId, position: obj._position || null, circleObj: obj, innerCircle });
             }
           }
         });
@@ -1162,11 +1180,27 @@
       const label = document.createElement('label');
       label.textContent = f.label;
       fieldDiv.appendChild(label);
-      const input = document.createElement('input');
-      input.type = f.type || 'text';
-      input.className = 'modal-input';
-      input.placeholder = f.placeholder || '';
-      if (f.value) input.value = f.value;
+
+      let input;
+      if (f.type === 'select') {
+        input = document.createElement('select');
+        input.className = 'modal-input';
+        (f.options || []).forEach(opt => {
+          const o = document.createElement('option');
+          o.value = typeof opt === 'string' ? opt : opt.value;
+          o.textContent = typeof opt === 'string' ? opt : opt.label;
+          input.appendChild(o);
+        });
+        if (f.value) input.value = f.value;
+      } else {
+        input = document.createElement('input');
+        input.type = f.type || 'text';
+        input.className = 'modal-input';
+        input.placeholder = f.placeholder || '';
+        if (f.min != null) input.min = f.min;
+        if (f.max != null) input.max = f.max;
+        if (f.value) input.value = f.value;
+      }
       fieldDiv.appendChild(input);
       content.appendChild(fieldDiv);
       inputs[f.id] = input;
@@ -1187,7 +1221,7 @@
 
     overlay.classList.remove('hidden');
     const firstInput = Object.values(inputs)[0];
-    if (firstInput) { firstInput.focus(); firstInput.select(); }
+    if (firstInput) { firstInput.focus(); if (typeof firstInput.select === 'function') firstInput.select(); }
 
     const close = () => overlay.classList.add('hidden');
 
