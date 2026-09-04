@@ -292,6 +292,24 @@ html, body {
   white-space: nowrap;
 }
 
+.roster-position {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  font-size: 9px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+}
+
+.roster-position-attack { background: #e63946; }
+.roster-position-midfield { background: #4cc9f0; }
+.roster-position-defense { background: #7b2d8b; }
+.roster-position-goalie { background: #f4a261; }
+
 /* Canvas container */
 #canvas-container {
   flex: 1;
